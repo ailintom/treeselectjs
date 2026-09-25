@@ -33,8 +33,7 @@ export const updateDOM = ({
   updateEmptyListClass({ optionsTreeMap, emptyListHtmlElement })
 }
 
-// Padding depends only on level/isGroup, which don't change after the list is created,
-// so this runs once when the items are rendered rather than on every updateDOM
+// level and isGroup never change, so this runs once after the items are built instead of in updateDOM
 export const updateLeftPaddingItems = ({ optionsTreeMap, rtl }: { optionsTreeMap: OptionsTreeMap; rtl: boolean }) => {
   let isGroupsExistOnZeroLevel = false
 

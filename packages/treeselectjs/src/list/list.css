@@ -17,7 +17,7 @@
   box-sizing: border-box;
   cursor: pointer;
   height: 30px;
-  /* Skip style/layout/paint of the contents of items scrolled out of view (big win for large lists) */
+  /* Skip rendering the contents of items scrolled out of view */
   content-visibility: auto;
   contain-intrinsic-size: auto 30px;
 }

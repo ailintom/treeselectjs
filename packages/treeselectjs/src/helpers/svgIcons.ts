@@ -19,9 +19,7 @@ export const icons: IconsType = {
     '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 25 25" fill="none" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>',
 }
 
-// Parsed string icons, so each distinct SVG string is parsed once and then cloned
 const iconTemplates = new Map<string, HTMLTemplateElement>()
-// Icon last applied to an element, so updateIconIfChanged can skip identical updates
 const appliedIcons = new WeakMap<HTMLElement, string | HTMLElement>()
 
 export const appendIconToElement = (icon: string | HTMLElement, element: HTMLElement) => {
@@ -42,9 +40,8 @@ export const appendIconToElement = (icon: string | HTMLElement, element: HTMLEle
   }
 }
 
-/** Same as appendIconToElement, but a no-op if this icon is already applied to the element. */
 export const updateIconIfChanged = (icon: string | HTMLElement, element: HTMLElement) => {
-  // An element that never got an icon is empty, which is the same as the '' icon
+  // An element without an applied icon is empty, i.e. has the '' icon
   if ((appliedIcons.get(element) ?? '') !== icon) {
     appendIconToElement(icon, element)
   }

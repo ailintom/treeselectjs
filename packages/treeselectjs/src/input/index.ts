@@ -172,7 +172,7 @@ export class TreeselectInput implements ITreeselectInput {
     } else {
       const countElement = this.#createCountElement()
       this.#htmlTagsSection.appendChild(countElement)
-      // textContent, not innerText: innerText forces a synchronous layout when the input is connected
+      // innerText would force a synchronous layout
       this.nameChangeCallback(countElement.textContent ?? '')
     }
 

@@ -85,8 +85,7 @@ export class TreeselectList implements ITreeselectList {
   #isMouseActionsAvailable = true
   #previousSingleSelectedValue: ValueOptionType[] = []
   #isFirstValueUpdate: boolean = true
-  // Option items are not created in the constructor: they are built in the background when the
-  // browser is idle, or all at once by ensureRendered() if the list is opened before that finished
+  // Items are built in idle time, or synchronously by ensureRendered() if the list is opened first
   #isRendered: boolean = false
   #itemsBuilder: Generator<void> | null = null
   #cancelBackgroundRender: (() => void) | null = null
@@ -241,7 +240,6 @@ export class TreeselectList implements ITreeselectList {
     return !!this.#lastFocusedItem
   }
 
-  /** Finishes creating the option items; until they exist only optionsTreeMap state is kept up to date. */
   ensureRendered() {
     if (this.#isRendered) {
       return
@@ -249,9 +247,10 @@ export class TreeselectList implements ITreeselectList {
 
     this.#cancelBackgroundRender?.()
     const builder = this.#getItemsBuilder()
+    let step = builder.next()
 
-    while (!builder.next().done) {
-      // build all remaining items
+    while (!step.done) {
+      step = builder.next()
     }
 
     this.#finishRendering()
@@ -363,7 +362,6 @@ export class TreeselectList implements ITreeselectList {
 
   #createSrcElement() {
     const list = this.#createList()
-    // Option items are appended before emptyList by ensureRendered()
     const emptyList = this.#createEmptyList()
     list.append(emptyList)
 
@@ -422,7 +420,6 @@ export class TreeselectList implements ITreeselectList {
     return this.#itemsBuilder
   }
 
-  // Yields after each created item, so that the build can be split into chunks
   *#buildListItems(options: OptionType[], parent: HTMLElement | null): Generator<void> {
     for (const option of options) {
       const isGroup = !!option.children?.length
@@ -469,7 +466,7 @@ export class TreeselectList implements ITreeselectList {
       this.#scheduleBackgroundRender()
     }
 
-    // Chunks are kept short so that a click or keypress during the build isn't noticeably delayed
+    // Short chunks keep the page responsive to input during the build
     const maxChunkMs = 8
 
     if (typeof requestIdleCallback === 'function') {
@@ -479,7 +476,7 @@ export class TreeselectList implements ITreeselectList {
       })
       this.#cancelBackgroundRender = () => cancelIdleCallback(id)
     } else {
-      // Safari has no requestIdleCallback: build in short chunks between frames instead
+      // Safari has no requestIdleCallback
       const id = setTimeout(() => {
         const end = performance.now() + maxChunkMs
         renderChunk(() => performance.now() < end)
@@ -533,9 +530,8 @@ export class TreeselectList implements ITreeselectList {
   }
 
   #createGroupItem(option: OptionType, isGroup: boolean) {
-    // Items are cloned from a prebuilt skeleton: much cheaper than creating and appending each element
+    // Cloning a prebuilt skeleton is much cheaper than creating each element
     const itemElement = this.#getItemTemplate(isGroup).cloneNode(true) as HTMLDivElement
-    // Template children: [arrow,] checkbox container, label
     const children = itemElement.children
     const offset = isGroup ? 1 : 0
     const checkboxContainer = children[offset] as HTMLElement
@@ -573,7 +569,7 @@ export class TreeselectList implements ITreeselectList {
       label.classList.add('treeselect-list__item-label')
       item.append(checkboxContainer, label)
 
-      // The arrow icon itself is set by updateDOM according to the isClosed state
+      // The arrow icon is set by updateDOM
       const group = item.cloneNode(true) as HTMLElement
       group.classList.add('treeselect-list__item--group')
       const arrow = document.createElement('span')
