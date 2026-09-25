@@ -19,7 +19,7 @@ import {
   updateOptionsMapBySearchState,
   updateVisibleBySearchTreeItemOptions,
 } from './helpers/listVisibilityStateHelper'
-import { updateDOM, setAttributesFromHtmlAttr } from './helpers/domHelper'
+import { updateDOM, updateLeftPaddingItems, setAttributesFromHtmlAttr } from './helpers/domHelper'
 
 const updateListValue = ({
   newValue,
@@ -85,6 +85,12 @@ export class TreeselectList implements ITreeselectList {
   #isMouseActionsAvailable = true
   #previousSingleSelectedValue: ValueOptionType[] = []
   #isFirstValueUpdate: boolean = true
+  // Option items are not created in the constructor: they are built in the background when the
+  // browser is idle, or all at once by ensureRendered() if the list is opened before that finished
+  #isRendered: boolean = false
+  #itemsBuilder: Generator<void> | null = null
+  #cancelBackgroundRender: (() => void) | null = null
+  #itemTemplates: { item: HTMLElement; group: HTMLElement } | null = null
 
   constructor({
     options,
@@ -137,6 +143,8 @@ export class TreeselectList implements ITreeselectList {
     this.inputCallback = inputCallback
     this.arrowClickCallback = arrowClickCallback
     this.mouseupCallback = mouseupCallback
+
+    this.#scheduleBackgroundRender()
   }
 
   // Public methods
@@ -233,7 +241,25 @@ export class TreeselectList implements ITreeselectList {
     return !!this.#lastFocusedItem
   }
 
+  /** Finishes creating the option items; until they exist only optionsTreeMap state is kept up to date. */
+  ensureRendered() {
+    if (this.#isRendered) {
+      return
+    }
+
+    this.#cancelBackgroundRender?.()
+    const builder = this.#getItemsBuilder()
+
+    while (!builder.next().done) {
+      // build all remaining items
+    }
+
+    this.#finishRendering()
+  }
+
   destroy() {
+    this.#cancelBackgroundRender?.()
+
     if (this.intersectionItemsObserver) {
       this.intersectionItemsObserver.disconnect()
     }
@@ -241,12 +267,15 @@ export class TreeselectList implements ITreeselectList {
 
   // Private methods
   #updateListDOM() {
+    if (!this.#isRendered) {
+      return
+    }
+
     updateDOM({
       optionsTreeMap: this.optionsTreeMap,
       emptyListHtmlElement: this.emptyListHtmlElement,
       iconElements: this.iconElements,
       previousSingleSelectedValue: this.#previousSingleSelectedValue,
-      rtl: this.rtl,
     })
   }
 
@@ -334,9 +363,7 @@ export class TreeselectList implements ITreeselectList {
 
   #createSrcElement() {
     const list = this.#createList()
-    const listTreeItems = this.#getListHTML(this.options)
-    list.append(...listTreeItems)
-
+    // Option items are appended before emptyList by ensureRendered()
     const emptyList = this.#createEmptyList()
     list.append(emptyList)
 
@@ -389,23 +416,76 @@ export class TreeselectList implements ITreeselectList {
     this.#isMouseActionsAvailable = true
   }
 
-  #getListHTML(options: OptionType[]) {
-    return options.reduce((acc, option) => {
-      if (option.children?.length) {
-        const groupContainer = this.#createGroupContainer(option)
-        const innerGroupsAndElements = this.#getListHTML(option.children)
+  #getItemsBuilder() {
+    this.#itemsBuilder ??= this.#buildListItems(this.options, null)
 
-        groupContainer.append(...innerGroupsAndElements)
-        acc.push(groupContainer)
+    return this.#itemsBuilder
+  }
 
-        return acc
+  // Yields after each created item, so that the build can be split into chunks
+  *#buildListItems(options: OptionType[], parent: HTMLElement | null): Generator<void> {
+    for (const option of options) {
+      const isGroup = !!option.children?.length
+      const element = isGroup ? this.#createGroupContainer(option) : this.#createGroupItem(option, false)
+
+      if (parent) {
+        parent.appendChild(element)
+      } else {
+        this.emptyListHtmlElement?.before(element)
       }
 
-      const itemGroupElement = this.#createGroupItem(option, false)
-      acc.push(itemGroupElement)
+      yield
 
-      return acc
-    }, [] as HTMLElement[])
+      if (isGroup) {
+        yield* this.#buildListItems(option.children, element)
+      }
+    }
+  }
+
+  #finishRendering() {
+    this.#isRendered = true
+    this.#itemsBuilder = null
+    updateLeftPaddingItems({ optionsTreeMap: this.optionsTreeMap, rtl: this.rtl })
+    this.#updateListDOM()
+  }
+
+  #scheduleBackgroundRender() {
+    const renderChunk = (hasTimeLeft: () => boolean) => {
+      this.#cancelBackgroundRender = null
+
+      if (this.#isRendered) {
+        return
+      }
+
+      const builder = this.#getItemsBuilder()
+
+      while (hasTimeLeft()) {
+        if (builder.next().done) {
+          this.#finishRendering()
+          return
+        }
+      }
+
+      this.#scheduleBackgroundRender()
+    }
+
+    // Chunks are kept short so that a click or keypress during the build isn't noticeably delayed
+    const maxChunkMs = 8
+
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback((deadline) => {
+        const end = performance.now() + maxChunkMs
+        renderChunk(() => deadline.timeRemaining() > 1 && performance.now() < end)
+      })
+      this.#cancelBackgroundRender = () => cancelIdleCallback(id)
+    } else {
+      // Safari has no requestIdleCallback: build in short chunks between frames instead
+      const id = setTimeout(() => {
+        const end = performance.now() + maxChunkMs
+        renderChunk(() => performance.now() < end)
+      }, 16)
+      this.#cancelBackgroundRender = () => clearTimeout(id)
+    }
   }
 
   #createSlot() {
@@ -453,27 +533,68 @@ export class TreeselectList implements ITreeselectList {
   }
 
   #createGroupItem(option: OptionType, isGroup: boolean) {
-    const itemElement = this.#createItemElement(option)
+    // Items are cloned from a prebuilt skeleton: much cheaper than creating and appending each element
+    const itemElement = this.#getItemTemplate(isGroup).cloneNode(true) as HTMLDivElement
+    // Template children: [arrow,] checkbox container, label
+    const children = itemElement.children
+    const offset = isGroup ? 1 : 0
+    const checkboxContainer = children[offset] as HTMLElement
+    const label = children[offset + 1] as HTMLLabelElement
+
+    this.#initItemElement(itemElement, option)
 
     if (isGroup) {
-      const arrow = this.#createArrow(option)
-      itemElement.appendChild(arrow)
-      itemElement.classList.add('treeselect-list__item--group')
+      this.#initArrow(children[0] as HTMLElement, option)
     }
 
-    const checkbox = this.#createCheckbox(option)
-    const label = this.#createCheckboxLabel(option, isGroup)
-    itemElement.append(checkbox, label)
+    this.#initCheckbox(checkboxContainer, option)
+    this.#initCheckboxLabel(label, option, isGroup)
 
     return itemElement
   }
 
-  #createItemElement(option: OptionType) {
-    const itemElement = document.createElement('div')
-    itemElement.setAttribute('tabindex', '-1')
+  #getItemTemplate(isGroup: boolean) {
+    if (!this.#itemTemplates) {
+      const item = document.createElement('div')
+      item.setAttribute('tabindex', '-1')
+      item.classList.add('treeselect-list__item')
+
+      const checkboxContainer = document.createElement('div')
+      checkboxContainer.classList.add('treeselect-list__item-checkbox-container')
+      const ico = document.createElement('span')
+      ico.classList.add('treeselect-list__item-checkbox-icon')
+      const checkbox = document.createElement('input')
+      checkbox.setAttribute('tabindex', '-1')
+      checkbox.setAttribute('type', 'checkbox')
+      checkbox.classList.add('treeselect-list__item-checkbox')
+      checkboxContainer.append(ico, checkbox)
+
+      const label = document.createElement('label')
+      label.classList.add('treeselect-list__item-label')
+      item.append(checkboxContainer, label)
+
+      // The arrow icon itself is set by updateDOM according to the isClosed state
+      const group = item.cloneNode(true) as HTMLElement
+      group.classList.add('treeselect-list__item--group')
+      const arrow = document.createElement('span')
+      arrow.setAttribute('tabindex', '-1')
+      arrow.classList.add('treeselect-list__item-icon')
+      group.prepend(arrow)
+
+      this.#itemTemplates = { item, group }
+    }
+
+    return isGroup ? this.#itemTemplates.group : this.#itemTemplates.item
+  }
+
+  #initItemElement(itemElement: HTMLDivElement, option: OptionType) {
     itemElement.setAttribute('title', option.name)
-    setAttributesFromHtmlAttr(itemElement, option.htmlAttr)
-    itemElement.classList.add('treeselect-list__item')
+
+    if (option.htmlAttr) {
+      setAttributesFromHtmlAttr(itemElement, option.htmlAttr)
+      // htmlAttr may contain "class", which would overwrite the template classes
+      itemElement.classList.add('treeselect-list__item')
+    }
 
     itemElement.addEventListener('mouseover', () => this.#itemElementMouseover(itemElement), true)
     itemElement.addEventListener('mouseout', () => this.#itemElementMouseout(itemElement), true)
@@ -489,8 +610,6 @@ export class TreeselectList implements ITreeselectList {
     if (treeOption) {
       treeOption.itemHtmlElement = itemElement
     }
-
-    return itemElement
   }
 
   #itemElementMouseover(itemElement: HTMLDivElement) {
@@ -523,12 +642,7 @@ export class TreeselectList implements ITreeselectList {
     }
   }
 
-  #createArrow(option: OptionType) {
-    const arrow = document.createElement('span')
-    arrow.setAttribute('tabindex', '-1')
-    arrow.classList.add('treeselect-list__item-icon')
-    appendIconToElement(this.iconElements.arrowDown, arrow)
-
+  #initArrow(arrow: HTMLElement, option: OptionType) {
     arrow.addEventListener('mousedown', (e) => this.#arrowMousedown(e, option))
 
     // Add arrow to the optionsTreeMap
@@ -536,8 +650,6 @@ export class TreeselectList implements ITreeselectList {
     if (treeOption) {
       treeOption.arrowItemHtmlElement = arrow
     }
-
-    return arrow
   }
 
   #arrowMousedown(e: Event, option: OptionType) {
@@ -546,20 +658,10 @@ export class TreeselectList implements ITreeselectList {
     this.#arrowClickEvent(option)
   }
 
-  #createCheckbox(option: OptionType) {
-    const checkboxContainer = document.createElement('div')
-    checkboxContainer.classList.add('treeselect-list__item-checkbox-container')
-    const ico = document.createElement('span')
-    ico.classList.add('treeselect-list__item-checkbox-icon')
-    ico.innerHTML = ''
-
-    const checkbox = document.createElement('input')
-    checkbox.setAttribute('tabindex', '-1')
-    checkbox.setAttribute('type', `checkbox`)
+  #initCheckbox(checkboxContainer: HTMLElement, option: OptionType) {
+    const ico = checkboxContainer.children[0] as HTMLElement
+    const checkbox = checkboxContainer.children[1] as HTMLInputElement
     checkbox.setAttribute('input-id', option.value.toString())
-    checkbox.classList.add('treeselect-list__item-checkbox')
-
-    checkboxContainer.append(ico, checkbox)
 
     // Add checkbox to the optionsTreeMap
     const treeOption = this.optionsTreeMap.get(option.value)
@@ -567,21 +669,15 @@ export class TreeselectList implements ITreeselectList {
       treeOption.checkboxHtmlElement = checkbox
       treeOption.checkboxIconHtmlElement = ico
     }
-
-    return checkboxContainer
   }
 
-  #createCheckboxLabel(option: OptionType, isGroup: boolean) {
-    const label = document.createElement('label')
+  #initCheckboxLabel(label: HTMLLabelElement, option: OptionType, isGroup: boolean) {
     label.textContent = option.name
-    label.classList.add('treeselect-list__item-label')
 
     if (isGroup && this.showCount) {
       const counter = this.#createCounter(option)
       label.appendChild(counter)
     }
-
-    return label
   }
 
   #createCounter(option: OptionType) {

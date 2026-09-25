@@ -172,7 +172,8 @@ export class TreeselectInput implements ITreeselectInput {
     } else {
       const countElement = this.#createCountElement()
       this.#htmlTagsSection.appendChild(countElement)
-      this.nameChangeCallback(countElement.innerText)
+      // textContent, not innerText: innerText forces a synchronous layout when the input is connected
+      this.nameChangeCallback(countElement.textContent ?? '')
     }
 
     // We need to add htmlEditControl because we clear all data inside the tags list

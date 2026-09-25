@@ -17,6 +17,9 @@
   box-sizing: border-box;
   cursor: pointer;
   height: 30px;
+  /* Skip style/layout/paint of the contents of items scrolled out of view (big win for large lists) */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 30px;
 }
 
 .treeselect-list__item:focus {
